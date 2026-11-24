@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 from copy import deepcopy
+from functools import lru_cache
 from typing import Any
 
 import cv2
@@ -2116,6 +2117,12 @@ class CopyPaste(BaseMixTransform):
         return labels
 
 
+@lru_cache(maxsize=1)
+def _warn_albumentations_uint8():
+    """Warn once per process that Albumentations is skipped for images that are not uint8."""
+    LOGGER.warning("albumentations: skipped for uint16 and float32 images, some transforms reduce them to 8 bits.")
+
+
 class Albumentations(BaseTransform):
     """Albumentations transformations for image augmentation.
 
@@ -2249,6 +2256,7 @@ class Albumentations(BaseTransform):
             - The method applies transformations with probability self.p.
             - Spatial transforms update bounding boxes, while non-spatial transforms only modify the image.
             - Requires the Albumentations library to be installed.
+            - Images that are not uint8, such as uint16 and float32, are returned unchanged.
         """
         if self.transform is None or random.random() >= self.p:
             return labels
@@ -2258,6 +2266,9 @@ class Albumentations(BaseTransform):
 
         im = labels["img"]
         if im.shape[2] not in {1, 3}:  # Albumentations supports grayscale and color images only
+            return labels
+        if im.dtype != np.uint8:  # MedianBlur, CLAHE and ImageCompression quantize other dtypes to 8 bits
+            _warn_albumentations_uint8()
             return labels
 
         if self.contains_spatial:
