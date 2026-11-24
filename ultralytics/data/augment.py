@@ -1525,9 +1525,15 @@ class RandomHSV(BaseTransform):
         if img.shape[-1] != 3:  # only apply to 3-channel (BGR) images
             return labels
         if self.hgain or self.sgain or self.vgain:
-            dtype = img.dtype  # uint8
-
             r = np.random.uniform(-1, 1, 3) * [self.hgain, self.sgain, self.vgain]  # random gains
+            if img.dtype != np.uint8:  # uint16 and float32: float HSV with H in [0, 360), S in [0, 1], V in [0, max]
+                # Hue shift as in the uint8 LUT (hue 0-180 there), kept in [0, 360) since HSV2BGR wraps [360, 720)
+                # only. Gains are >= 0, so S and V only need an upper clip; zero saturation stays achromatic.
+                gains = [[1, 0, 0, r[0] * 360 % 360], [0, r[1] + 1, 0, 0], [0, 0, r[2] + 1, 0]]
+                hsv = cv2.transform(cv2.cvtColor(img.astype(np.float32), cv2.COLOR_BGR2HSV), np.float32(gains))
+                img[:] = cv2.cvtColor(cv2.min(hsv, (720, 1, img_max(img.dtype), 0)), cv2.COLOR_HSV2BGR)  # in place
+                return labels
+            dtype = img.dtype  # uint8
             x = np.arange(0, 256, dtype=r.dtype)
             # lut_hue = ((x * (r[0] + 1)) % 180).astype(dtype)   # original hue implementation from ultralytics<=8.3.78
             lut_hue = ((x + r[0] * 180) % 180).astype(dtype)
