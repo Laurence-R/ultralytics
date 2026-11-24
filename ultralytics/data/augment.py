@@ -852,7 +852,7 @@ class MixUp(BaseMixTransform):
         """
         r = params["r"]
         labels2 = labels["mix_labels"][0]
-        labels["img"] = (labels["img"] * r + labels2["img"] * (1 - r)).astype(np.uint8)
+        labels["img"] = (labels["img"] * r + labels2["img"] * (1 - r)).astype(labels["img"].dtype)
         return labels
 
     def apply_instances(self, labels: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1215,10 +1215,11 @@ class RandomPerspective(BaseTransform):
         M = params["M"]
         size = params["size"]
         # 4 values: cv2 tiles borderValue in blocks of 4, so a 3-tuple zeroes every 4th multispectral channel
+        border = (114 * img_max(img.dtype) / 255,) * 4  # 114 gray in the image dtype range
         if self.perspective:
-            img = cv2.warpPerspective(img, M, dsize=size, borderValue=(114, 114, 114, 114))
+            img = cv2.warpPerspective(img, M, dsize=size, borderValue=border)
         else:  # affine
-            img = cv2.warpAffine(img, M[:2], dsize=size, borderValue=(114, 114, 114, 114))
+            img = cv2.warpAffine(img, M[:2], dsize=size, borderValue=border)
         if img.ndim == 2:
             img = img[..., None]
         labels["img"] = img
@@ -1698,7 +1699,7 @@ class LetterBox(BaseTransform):
         scaleup (bool): Whether to allow scaling up. If False, only scale down.
         stride (int): Stride for rounding padding.
         center (bool): Whether to center the image or align to top-left.
-        padding_value (int): Value for padding the image.
+        padding_value (int): Value for padding the image, on the 0-255 scale and scaled to the image dtype range.
         interpolation (int): OpenCV interpolation method for resizing.
 
     Methods:
@@ -1735,7 +1736,7 @@ class LetterBox(BaseTransform):
             scaleup (bool): If True, allow scaling up. If False, only scale down.
             center (bool): If True, center the placed image. If False, place image in top-left corner.
             stride (int): Stride of the model (e.g., 32).
-            padding_value (int): Value for padding the image. Default is 114.
+            padding_value (int): Padding value on the 0-255 scale, scaled to the image dtype range. Default is 114.
             interpolation (int): Interpolation method for resizing. Default is cv2.INTER_LINEAR.
         """
         self.new_shape = new_shape
@@ -1856,12 +1857,11 @@ class LetterBox(BaseTransform):
         h, w, c = img.shape
         top, bottom = params["top"], params["bottom"]
         left, right = params["left"], params["right"]
+        pad = self.padding_value * img_max(img.dtype) / 255  # padding_value is on the uint8 scale
         if c == 3:
-            img = cv2.copyMakeBorder(
-                img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(self.padding_value,) * 3
-            )
+            img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(pad,) * 3)
         else:  # multispectral
-            pad_img = np.full((h + top + bottom, w + left + right, c), fill_value=self.padding_value, dtype=img.dtype)
+            pad_img = np.full((h + top + bottom, w + left + right, c), fill_value=pad, dtype=img.dtype)
             pad_img[top : top + h, left : left + w] = img
             img = pad_img
 
@@ -3191,7 +3191,7 @@ class ClassifyLetterBox:
         top, left = round((hs - h) / 2 - 0.1), round((ws - w) / 2 - 0.1)
 
         # Create padded image
-        im_out = np.full((hs, ws, 3), 114, dtype=im.dtype)
+        im_out = np.full((hs, ws, 3), 114 * img_max(im.dtype) / 255, dtype=im.dtype)
         im_out[top : top + h, left : left + w] = cv2.resize(im, (w, h), interpolation=cv2.INTER_LINEAR)
         return im_out
 
