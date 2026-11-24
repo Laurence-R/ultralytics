@@ -162,6 +162,7 @@ class BaseDataset(Dataset):
         self.fraction = get_split_fraction(fraction, "train")
         self.channels = channels
         self.cv2_flag = {1: cv2.IMREAD_GRAYSCALE, 3: cv2.IMREAD_COLOR}.get(channels, cv2.IMREAD_UNCHANGED)
+        self.cv2_flag |= cv2.IMREAD_ANYDEPTH  # keep uint16 and float32 images at their original bit depth
         self.im_files = self.get_img_files(self.img_path)
         self.labels = self.get_labels()
         self.update_labels(include_class=classes)  # single_cls and include_class
@@ -293,7 +294,7 @@ class BaseDataset(Dataset):
             try:
                 im = np.load(fn)
                 npy_channels = im.shape[-1] if im.ndim >= 3 else 1
-                if npy_channels != self.channels or im.dtype == np.uint16:
+                if npy_channels != self.channels:
                     LOGGER.warning(
                         f"{self.prefix}Refreshing stale *.npy image file {fn} with {npy_channels} channels and "
                         f"{im.dtype} dtype"
