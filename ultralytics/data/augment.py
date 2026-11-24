@@ -2535,7 +2535,8 @@ class Format(BaseTransform):
             img (np.ndarray): Input image as a Numpy array with shape (H, W, C) or (H, W).
 
         Returns:
-            (torch.Tensor): Formatted image as a PyTorch tensor with shape (C, H, W).
+            (torch.Tensor): Formatted image as a PyTorch tensor with shape (C, H, W), uint8 for uint8 images and
+                float32 in [0, 1] for uint16 and float32 images.
 
         Examples:
             >>> import numpy as np
@@ -2548,6 +2549,8 @@ class Format(BaseTransform):
             img = img[..., None]
         img = img.transpose(2, 0, 1)
         img = np.ascontiguousarray(img[::-1] if random.uniform(0, 1) > self.bgr and img.shape[0] == 3 else img)
+        if img.dtype != np.uint8:  # uint16 and float32 to float32 in [0, 1], so preprocess_batch skips the / 255
+            img = img.astype(np.float32) / img_max(img.dtype)
         img = torch.from_numpy(img)
         return img
 
@@ -3335,8 +3338,12 @@ class ToTensor:
             >>> print(tensor_img.shape, tensor_img.dtype)
             torch.Size([3, 640, 640]) torch.float16
         """
+        m = img_max(im.dtype)  # 255 for uint8, 65535 for uint16, 1.0 for float
         im = np.ascontiguousarray(im.transpose((2, 0, 1)))  # HWC to CHW -> contiguous
-        im = torch.from_numpy(im)  # to torch
-        im = im.half() if self.half else im.float()  # uint8 to fp16/32
-        im /= 255.0  # 0-255 to 0.0-1.0
+        im = torch.from_numpy(
+            im if m == 255 else im.astype(np.float32) / m
+        )  # others to [0, 1] first, fp16 max is 65504
+        im = im.half() if self.half else im.float()  # to fp16/32
+        if m == 255:
+            im /= 255.0  # 0-255 to 0.0-1.0
         return im
