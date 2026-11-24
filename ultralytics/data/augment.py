@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 from copy import deepcopy
+from functools import lru_cache
 from typing import Any
 
 import cv2
@@ -18,7 +19,7 @@ from ultralytics.utils import LOGGER, IterableSimpleNamespace, colorstr, depreca
 from ultralytics.utils.checks import check_version
 from ultralytics.utils.instance import Instances
 from ultralytics.utils.metrics import bbox_ioa
-from ultralytics.utils.ops import segment2box, xywh2xyxy, xyxyxyxy2xywhr
+from ultralytics.utils.ops import img_max, segment2box, xywh2xyxy, xyxyxyxy2xywhr
 from ultralytics.utils.torch_utils import TORCHVISION_0_10, TORCHVISION_0_11, TORCHVISION_0_13
 
 DEFAULT_MEAN = (0.0, 0.0, 0.0)
@@ -607,8 +608,13 @@ class Mosaic(BaseMixTransform):
             (dict): Updated labels with mosaic image.
         """
         layout = params["layout"]
+        dtype = labels["img"].dtype
         if self.n == 4:
-            img4 = np.full((self.imgsz * 2, self.imgsz * 2, labels["img"].shape[2]), 114, dtype=np.uint8)
+            img4 = np.full(
+                (self.imgsz * 2, self.imgsz * 2, labels["img"].shape[2]),
+                114 * img_max(dtype) / 255,  # 114 gray in the image dtype range
+                dtype=dtype,
+            )
             for item in layout:
                 labels_patch = item["labels_patch"]
                 img = labels_patch["img"]
@@ -617,7 +623,11 @@ class Mosaic(BaseMixTransform):
                 img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]
             labels["img"] = img4
         elif self.n == 9:
-            img9 = np.full((self.imgsz * 3, self.imgsz * 3, labels["img"].shape[2]), 114, dtype=np.uint8)
+            img9 = np.full(
+                (self.imgsz * 3, self.imgsz * 3, labels["img"].shape[2]),
+                114 * img_max(dtype) / 255,  # 114 gray in the image dtype range
+                dtype=dtype,
+            )
             for item in layout:
                 labels_patch = item["labels_patch"]
                 img = labels_patch["img"]
@@ -843,7 +853,7 @@ class MixUp(BaseMixTransform):
         """
         r = params["r"]
         labels2 = labels["mix_labels"][0]
-        labels["img"] = (labels["img"] * r + labels2["img"] * (1 - r)).astype(np.uint8)
+        labels["img"] = (labels["img"] * r + labels2["img"] * (1 - r)).astype(labels["img"].dtype)
         return labels
 
     def apply_instances(self, labels: dict[str, Any], params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1206,10 +1216,11 @@ class RandomPerspective(BaseTransform):
         M = params["M"]
         size = params["size"]
         # 4 values: cv2 tiles borderValue in blocks of 4, so a 3-tuple zeroes every 4th multispectral channel
+        border = (114 * img_max(img.dtype) / 255,) * 4  # 114 gray in the image dtype range
         if self.perspective:
-            img = cv2.warpPerspective(img, M, dsize=size, borderValue=(114, 114, 114, 114))
+            img = cv2.warpPerspective(img, M, dsize=size, borderValue=border)
         else:  # affine
-            img = cv2.warpAffine(img, M[:2], dsize=size, borderValue=(114, 114, 114, 114))
+            img = cv2.warpAffine(img, M[:2], dsize=size, borderValue=border)
         if img.ndim == 2:
             img = img[..., None]
         labels["img"] = img
@@ -1515,9 +1526,15 @@ class RandomHSV(BaseTransform):
         if img.shape[-1] != 3:  # only apply to 3-channel (BGR) images
             return labels
         if self.hgain or self.sgain or self.vgain:
-            dtype = img.dtype  # uint8
-
             r = np.random.uniform(-1, 1, 3) * [self.hgain, self.sgain, self.vgain]  # random gains
+            if img.dtype != np.uint8:  # uint16 and float32: float HSV with H in [0, 360), S in [0, 1], V in [0, max]
+                # Hue shift as in the uint8 LUT (hue 0-180 there), kept in [0, 360) since HSV2BGR wraps [360, 720)
+                # only. Gains are >= 0, so S and V only need an upper clip; zero saturation stays achromatic.
+                gains = [[1, 0, 0, r[0] * 360 % 360], [0, r[1] + 1, 0, 0], [0, 0, r[2] + 1, 0]]
+                hsv = cv2.transform(cv2.cvtColor(img.astype(np.float32), cv2.COLOR_BGR2HSV), np.float32(gains))
+                img[:] = cv2.cvtColor(cv2.min(hsv, (720, 1, img_max(img.dtype), 0)), cv2.COLOR_HSV2BGR)  # in place
+                return labels
+            dtype = img.dtype  # uint8
             x = np.arange(0, 256, dtype=r.dtype)
             # lut_hue = ((x * (r[0] + 1)) % 180).astype(dtype)   # original hue implementation from ultralytics<=8.3.78
             lut_hue = ((x + r[0] * 180) % 180).astype(dtype)
@@ -1689,7 +1706,7 @@ class LetterBox(BaseTransform):
         scaleup (bool): Whether to allow scaling up. If False, only scale down.
         stride (int): Stride for rounding padding.
         center (bool): Whether to center the image or align to top-left.
-        padding_value (int): Value for padding the image.
+        padding_value (int): Value for padding the image, on the 0-255 scale and scaled to the image dtype range.
         interpolation (int): OpenCV interpolation method for resizing.
 
     Methods:
@@ -1726,7 +1743,7 @@ class LetterBox(BaseTransform):
             scaleup (bool): If True, allow scaling up. If False, only scale down.
             center (bool): If True, center the placed image. If False, place image in top-left corner.
             stride (int): Stride of the model (e.g., 32).
-            padding_value (int): Value for padding the image. Default is 114.
+            padding_value (int): Padding value on the 0-255 scale, scaled to the image dtype range. Default is 114.
             interpolation (int): Interpolation method for resizing. Default is cv2.INTER_LINEAR.
         """
         self.new_shape = new_shape
@@ -1847,12 +1864,11 @@ class LetterBox(BaseTransform):
         h, w, c = img.shape
         top, bottom = params["top"], params["bottom"]
         left, right = params["left"], params["right"]
+        pad = self.padding_value * img_max(img.dtype) / 255  # padding_value is on the uint8 scale
         if c == 3:
-            img = cv2.copyMakeBorder(
-                img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(self.padding_value,) * 3
-            )
+            img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(pad,) * 3)
         else:  # multispectral
-            pad_img = np.full((h + top + bottom, w + left + right, c), fill_value=self.padding_value, dtype=img.dtype)
+            pad_img = np.full((h + top + bottom, w + left + right, c), fill_value=pad, dtype=img.dtype)
             pad_img[top : top + h, left : left + w] = img
             img = pad_img
 
@@ -2101,6 +2117,12 @@ class CopyPaste(BaseMixTransform):
         return labels
 
 
+@lru_cache(maxsize=1)
+def _warn_albumentations_uint8():
+    """Warn once that Albumentations is skipped for images that are not uint8, also when close_mosaic rebuilds."""
+    LOGGER.warning("albumentations: skipped for uint16 and float32 images, some transforms reduce them to 8 bits.")
+
+
 class Albumentations(BaseTransform):
     """Albumentations transformations for image augmentation.
 
@@ -2234,6 +2256,7 @@ class Albumentations(BaseTransform):
             - The method applies transformations with probability self.p.
             - Spatial transforms update bounding boxes, while non-spatial transforms only modify the image.
             - Requires the Albumentations library to be installed.
+            - Images that are not uint8, such as uint16 and float32, are returned unchanged.
         """
         if self.transform is None or random.random() >= self.p:
             return labels
@@ -2243,6 +2266,8 @@ class Albumentations(BaseTransform):
 
         im = labels["img"]
         if im.shape[2] not in {1, 3}:  # Albumentations supports grayscale and color images only
+            return labels
+        if im.dtype != np.uint8:  # MedianBlur, CLAHE and ImageCompression quantize other dtypes to 8 bits
             return labels
 
         if self.contains_spatial:
@@ -2509,7 +2534,8 @@ class Format(BaseTransform):
             img (np.ndarray): Input image as a Numpy array with shape (H, W, C) or (H, W).
 
         Returns:
-            (torch.Tensor): Formatted image as a PyTorch tensor with shape (C, H, W).
+            (torch.Tensor): Formatted image as a PyTorch tensor with shape (C, H, W), uint8 for uint8 images and
+                float32 in [0, 1] for uint16 and float32 images.
 
         Examples:
             >>> import numpy as np
@@ -2522,6 +2548,8 @@ class Format(BaseTransform):
             img = img[..., None]
         img = img.transpose(2, 0, 1)
         img = np.ascontiguousarray(img[::-1] if random.uniform(0, 1) > self.bgr and img.shape[0] == 3 else img)
+        if img.dtype != np.uint8:  # uint16 and float32 to float32 in [0, 1], so preprocess_batch skips the / 255
+            img = img.astype(np.float32) / img_max(img.dtype)
         img = torch.from_numpy(img)
         return img
 
@@ -2903,12 +2931,15 @@ def v8_transforms(dataset, imgsz: int, hyp: IterableSimpleNamespace) -> Compose:
         elif flip_idx and (len(flip_idx) != kpt_shape[0]):
             raise ValueError(f"data.yaml flip_idx={flip_idx} length must be equal to kpt_shape[0]={kpt_shape[0]}")
 
+    albumentations = Albumentations(p=1.0, transforms=getattr(hyp, "augmentations", None), flip_idx=flip_idx)
+    if albumentations.transform is not None and dataset.dtype != np.uint8:
+        _warn_albumentations_uint8()  # warn here in the main process, every DataLoader worker would warn again
     return Compose(
         [
             pre_transform,
             MixUp(dataset, pre_transform=pre_transform, p=hyp.mixup),
             CutMix(dataset, pre_transform=pre_transform, p=hyp.cutmix),
-            Albumentations(p=1.0, transforms=getattr(hyp, "augmentations", None), flip_idx=flip_idx),
+            albumentations,
             RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
             RandomFlip(direction="vertical", p=hyp.flipud, flip_idx=flip_idx),
             RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),
@@ -3182,7 +3213,7 @@ class ClassifyLetterBox:
         top, left = round((hs - h) / 2 - 0.1), round((ws - w) / 2 - 0.1)
 
         # Create padded image
-        im_out = np.full((hs, ws, 3), 114, dtype=im.dtype)
+        im_out = np.full((hs, ws, 3), 114 * img_max(im.dtype) / 255, dtype=im.dtype)
         im_out[top : top + h, left : left + w] = cv2.resize(im, (w, h), interpolation=cv2.INTER_LINEAR)
         return im_out
 
@@ -3306,8 +3337,12 @@ class ToTensor:
             >>> print(tensor_img.shape, tensor_img.dtype)
             torch.Size([3, 640, 640]) torch.float16
         """
+        m = img_max(im.dtype)  # 255 for uint8, 65535 for uint16, 1.0 for float
         im = np.ascontiguousarray(im.transpose((2, 0, 1)))  # HWC to CHW -> contiguous
-        im = torch.from_numpy(im)  # to torch
-        im = im.half() if self.half else im.float()  # uint8 to fp16/32
-        im /= 255.0  # 0-255 to 0.0-1.0
+        im = torch.from_numpy(
+            im if m == 255 else im.astype(np.float32) / m
+        )  # others to [0, 1] first, fp16 max is 65504
+        im = im.half() if self.half else im.float()  # to fp16/32
+        if m == 255:
+            im /= 255.0  # 0-255 to 0.0-1.0
         return im

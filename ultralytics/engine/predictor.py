@@ -190,7 +190,7 @@ class BasePredictor:
 
         Args:
             im (torch.Tensor | list[np.ndarray]): Images of shape (N, 3, H, W) for tensor, already RGB and normalized to
-                0.0-1.0, or [(H, W, 3) x N] for list of BGR uint8 arrays. See
+                0.0-1.0, or [(H, W, 3) x N] for list of BGR uint8, uint16 or float32 (0.0-1.0) arrays. See
                 ultralytics.data.loaders.LoadTensor._single_check for tensor input requirements.
 
         Returns:
@@ -198,13 +198,18 @@ class BasePredictor:
         """
         if not isinstance(im, torch.Tensor):
             im = self.pre_transform(im)
+            if any(x.dtype != np.uint8 for x in im):  # uint16 and float32 to float32 in [0, 1], uint8 on device below
+                im = [x.astype(np.float32) / ops.img_max(x.dtype) for x in im]
             # For a single image, add a batch dimension without the copy required by np.stack().
             im = torch.from_numpy(im[0]).unsqueeze(0) if len(im) == 1 else torch.from_numpy(np.stack(im))
             im = im.to(self.device)  # transfer as uint8, then reorder on device
             im = im.permute(0, 3, 1, 2).contiguous()  # BHWC to BCHW, (n, 3, h, w), dense first for a faster flip
             if im.shape[1] == 3:
                 im = im.flip(1)  # BGR to RGB
-            im = (im.half() if self.model.fp16 else im.float()).div_(255)  # uint8 to fp16/32, 0 - 255 to 0.0 - 1.0
+            u8 = im.dtype == torch.uint8
+            im = im.half() if self.model.fp16 else im.float()  # to fp16/32
+            if u8:
+                im = im.div_(255)  # 0 - 255 to 0.0 - 1.0
         else:
             im = im.to(self.device, torch.float16 if self.model.fp16 else torch.float32)  # already 0-1, MPS no fp64
         return im

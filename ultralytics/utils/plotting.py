@@ -383,6 +383,7 @@ class Annotator:
         Args:
             im (np.ndarray | Image.Image | torch.Tensor): Image to annotate. Arrays and tensors are HWC BGR uint8;
                 grayscale is expanded to 3 channels, 2-channel images are zero-padded, and extra channels are dropped.
+                uint16 and float32 (0.0-1.0) arrays are drawn on an 8-bit copy scaled by their dtype range.
             line_width (int, optional): Line width. Defaults to ~0.3% of the mean image dimension, at least 2.
             font_size (int, optional): Font size for PIL text. Defaults to ~3.5% of the mean image dimension, at least
                 12.
@@ -404,6 +405,8 @@ class Annotator:
             )
             if self.pil or im.device.type == "cpu":
                 im, input_is_tensor = im.cpu().numpy(), False
+        if not input_is_tensor and im.dtype != np.uint8:  # uint16 and float32 to an 8-bit copy for display
+            im = cv2.convertScaleAbs(im, alpha=255 / ops.img_max(im.dtype))
         if im.ndim == 2 or im.shape[2] == 1:  # handle grayscale
             im = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
         elif im.shape[2] == 2:  # handle 2-channel images
@@ -880,7 +883,8 @@ def save_one_box(
         file.parent.mkdir(parents=True, exist_ok=True)  # make directory
         f = str(increment_path(file.with_suffix(".jpg")))
         # cv2.imwrite(f, crop)  # save BGR, https://github.com/ultralytics/yolov5/issues/7007 chroma subsampling issue
-        im_save = crop.reshape(crop.shape[:2]) if grayscale else crop[..., :3][..., ::-1]
+        im_save = crop if crop.dtype == np.uint8 else cv2.convertScaleAbs(crop, alpha=255 / ops.img_max(crop.dtype))
+        im_save = im_save.reshape(crop.shape[:2]) if grayscale else im_save[..., :3][..., ::-1]  # JPEG is 8-bit
         Image.fromarray(im_save).save(f, quality=95, subsampling=0)  # save RGB
     return crop if BGR or grayscale else crop[..., ::-1]
 

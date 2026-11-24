@@ -40,8 +40,8 @@ def imread(filename: str | Path, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | 
         - Only cv2.IMREAD_UNCHANGED stacks the same-size pages of a multi-page grayscale TIFF as channels and keeps
           every band of a color TIFF, such as alpha or near-infrared. Other flags, and TIFFs with mixed page sizes such
           as Cloud Optimized GeoTIFFs, return the first page, so scanned documents read as one page.
-        - 16-bit images keep their high byte as 8-bit, unless flags explicitly include cv2.IMREAD_ANYDEPTH.
-          cv2.IMREAD_UNCHANGED preserves channels but still converts 16-bit images to 8-bit.
+        - 16-bit images keep their high byte as 8-bit, unless flags include cv2.IMREAD_ANYDEPTH. cv2.IMREAD_UNCHANGED
+          includes it, so 16-bit and float32 images are returned with their original dtype and values.
     """
     filename = str(filename)
     try:
@@ -65,7 +65,7 @@ def imread(filename: str | Path, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | 
         im = cv2.imdecode(file_bytes, flags | cv2.IMREAD_IGNORE_ORIENTATION if stored else flags)
         if stored and im is not None:
             im = _exif_transpose(im, memoryview(file_bytes))
-    if im is not None and im.dtype == np.uint16 and (flags == cv2.IMREAD_UNCHANGED or not flags & cv2.IMREAD_ANYDEPTH):
+    if im is not None and im.dtype == np.uint16 and not flags & cv2.IMREAD_ANYDEPTH:  # UNCHANGED includes ANYDEPTH
         im = (im >> 8).astype(np.uint8)
     return im[..., None] if im is not None and im.ndim == 2 else im  # Always ensure 3 dimensions
 

@@ -258,6 +258,11 @@ def scale_boxes(
     return boxes if xywh else clip_boxes(boxes, img0_shape)
 
 
+def img_max(dtype) -> float:
+    """Return the maximum pixel value of an image dtype: 255 for uint8, 65535 for uint16 and 1.0 for float."""
+    return {np.uint8: 255, np.uint16: 65535}.get(np.dtype(dtype).type, 1.0)
+
+
 def make_divisible(x: float, divisor):
     """Return the smallest number >= x that is divisible by the given divisor.
 

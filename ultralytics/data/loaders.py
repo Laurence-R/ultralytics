@@ -9,7 +9,7 @@ import os
 import time
 import urllib
 from dataclasses import dataclass
-from functools import partial
+from functools import lru_cache, partial
 from io import BytesIO
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
@@ -487,7 +487,7 @@ class LoadImagesAndVideos:
                     # Keep fallback formats serial: their lazy PIL plugin registration is not thread-safe.
                     if not any(Path(x).suffix.lower() in PIL_FALLBACK_SUFFIXES for x in image_paths):
                         with ThreadPool(min(n, NUM_THREADS)) as pool:
-                            decoded = pool.map(partial(imread, flags=self.cv2_flag), image_paths)
+                            decoded = pool.map(partial(imread, flags=self.cv2_flag | cv2.IMREAD_ANYDEPTH), image_paths)
                         for i, (image_path, im0) in enumerate(zip(image_paths, decoded)):
                             self._append_image(paths, imgs, info, image_path, im0, self.count + i + 1)
                         self.count += n  # move to the next batch of files
@@ -495,7 +495,7 @@ class LoadImagesAndVideos:
                             break
                         continue
 
-                im0 = imread(path, flags=self.cv2_flag)  # BGR
+                im0 = imread(path, flags=self.cv2_flag | cv2.IMREAD_ANYDEPTH)  # BGR, keep uint16 and float32
                 self._append_image(paths, imgs, info, path, im0, self.count + 1)
                 self.count += 1  # move to the next file
                 if self.count >= self.ni and imgs:  # end of image list, flush only a non-empty batch
@@ -524,6 +524,12 @@ class LoadImagesAndVideos:
     def __len__(self) -> int:
         """Return the number of batches in the dataset."""
         return math.ceil(self.nf / self.bs)  # number of batches
+
+
+@lru_cache(maxsize=1)
+def _warn_unnormalized_float():
+    """Warn once per process that float images above 1.0 are divided by 255."""
+    LOGGER.warning("float images should be normalized 0.0-1.0 but have values above 1.0. Dividing them by 255.")
 
 
 class LoadPilAndNumpy:
@@ -583,14 +589,16 @@ class LoadPilAndNumpy:
         pil = isinstance(im, Image.Image)
         if pil:
             im = ImageOps.exif_transpose(im) if im.getexif().get(274, 1) in range(2, 9) else im  # skip the upright copy
-            if im.mode.startswith("I;16"):  # convert() clips 16-bit values at 255, scale them like cv2 does
-                im = Image.fromarray((np.asarray(im) >> 8).astype(np.uint8))
-            flag = "L" if channels == 1 else "RGB"
-            im = np.asarray(im if im.mode == flag else im.convert(flag))  # convert() copies even when mode matches
-        elif im.dtype == np.uint16:  # e.g. cv2.IMREAD_UNCHANGED frames, scaled to 8 bits like imread and PIL I;16
-            im = (im >> 8).astype(np.uint8)
-        elif im.dtype.kind == "f":  # 0-255 floats as uint8: cv2, PIL (classify) and MPS reject some float dtypes
-            im = im.astype(np.uint8)
+            if im.mode.startswith("I;16") or im.mode == "F":  # convert() clips these, keep 16-bit and float32 values
+                im, pil = np.asarray(im, dtype=np.uint16 if im.mode.startswith("I;16") else np.float32), False
+            else:
+                flag = "L" if channels == 1 else "RGB"
+                im = np.asarray(im if im.mode == flag else im.convert(flag))  # convert() copies even when same mode
+        elif im.dtype.kind == "f":  # float32 in [0, 1]: cv2 and MPS reject other float dtypes
+            im = im.astype(np.float32, copy=False)
+            if im.size and im.max() > 1.0:
+                _warn_unnormalized_float()
+                im = im / 255.0
         im = np.atleast_3d(im)
         # Both routes validate here: a zero dimension divides by zero in LetterBox, and a batched array reads
         # shape[2] as a channel count it is not. Raised rather than asserted so `python -O` keeps the check, and
