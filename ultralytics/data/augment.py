@@ -20,6 +20,7 @@ from ultralytics.utils.checks import check_version
 from ultralytics.utils.instance import Instances
 from ultralytics.utils.metrics import bbox_ioa
 from ultralytics.utils.ops import img_max, segment2box, xywh2xyxy, xyxyxyxy2xywhr
+from ultralytics.utils.patches import imread
 from ultralytics.utils.torch_utils import TORCHVISION_0_10, TORCHVISION_0_11, TORCHVISION_0_13
 
 DEFAULT_MEAN = (0.0, 0.0, 0.0)
@@ -2119,7 +2120,7 @@ class CopyPaste(BaseMixTransform):
 
 @lru_cache(maxsize=1)
 def _warn_albumentations_uint8():
-    """Warn once per process that Albumentations is skipped for images that are not uint8."""
+    """Warn once that Albumentations is skipped for images that are not uint8, also when close_mosaic rebuilds."""
     LOGGER.warning("albumentations: skipped for uint16 and float32 images, some transforms reduce them to 8 bits.")
 
 
@@ -2268,7 +2269,6 @@ class Albumentations(BaseTransform):
         if im.shape[2] not in {1, 3}:  # Albumentations supports grayscale and color images only
             return labels
         if im.dtype != np.uint8:  # MedianBlur, CLAHE and ImageCompression quantize other dtypes to 8 bits
-            _warn_albumentations_uint8()
             return labels
 
         if self.contains_spatial:
@@ -2929,12 +2929,15 @@ def v8_transforms(dataset, imgsz: int, hyp: IterableSimpleNamespace) -> Compose:
         elif flip_idx and (len(flip_idx) != kpt_shape[0]):
             raise ValueError(f"data.yaml flip_idx={flip_idx} length must be equal to kpt_shape[0]={kpt_shape[0]}")
 
+    albumentations = Albumentations(p=1.0, transforms=getattr(hyp, "augmentations", None), flip_idx=flip_idx)
+    if albumentations.transform is not None and imread(dataset.im_files[0], flags=dataset.cv2_flag).dtype != np.uint8:
+        _warn_albumentations_uint8()  # warn here in the main process, every DataLoader worker would warn again
     return Compose(
         [
             pre_transform,
             MixUp(dataset, pre_transform=pre_transform, p=hyp.mixup),
             CutMix(dataset, pre_transform=pre_transform, p=hyp.cutmix),
-            Albumentations(p=1.0, transforms=getattr(hyp, "augmentations", None), flip_idx=flip_idx),
+            albumentations,
             RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
             RandomFlip(direction="vertical", p=hyp.flipud, flip_idx=flip_idx),
             RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),
