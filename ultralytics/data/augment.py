@@ -20,7 +20,6 @@ from ultralytics.utils.checks import check_version
 from ultralytics.utils.instance import Instances
 from ultralytics.utils.metrics import bbox_ioa
 from ultralytics.utils.ops import img_max, segment2box, xywh2xyxy, xyxyxyxy2xywhr
-from ultralytics.utils.patches import imread
 from ultralytics.utils.torch_utils import TORCHVISION_0_10, TORCHVISION_0_11, TORCHVISION_0_13
 
 DEFAULT_MEAN = (0.0, 0.0, 0.0)
@@ -2933,7 +2932,7 @@ def v8_transforms(dataset, imgsz: int, hyp: IterableSimpleNamespace) -> Compose:
             raise ValueError(f"data.yaml flip_idx={flip_idx} length must be equal to kpt_shape[0]={kpt_shape[0]}")
 
     albumentations = Albumentations(p=1.0, transforms=getattr(hyp, "augmentations", None), flip_idx=flip_idx)
-    if albumentations.transform is not None and imread(dataset.im_files[0], flags=dataset.cv2_flag).dtype != np.uint8:
+    if albumentations.transform is not None and dataset.dtype != np.uint8:
         _warn_albumentations_uint8()  # warn here in the main process, every DataLoader worker would warn again
     return Compose(
         [
