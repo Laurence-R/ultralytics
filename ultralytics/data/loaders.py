@@ -9,7 +9,7 @@ import os
 import time
 import urllib
 from dataclasses import dataclass
-from functools import partial
+from functools import lru_cache, partial
 from io import BytesIO
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
@@ -526,6 +526,12 @@ class LoadImagesAndVideos:
         return math.ceil(self.nf / self.bs)  # number of batches
 
 
+@lru_cache(maxsize=1)
+def _warn_unnormalized_float():
+    """Warn once per process that float images above 1.0 are divided by 255."""
+    LOGGER.warning("float images should be normalized 0.0-1.0 but have values above 1.0. Dividing them by 255.")
+
+
 class LoadPilAndNumpy:
     """Load images from PIL and Numpy arrays for batch processing.
 
@@ -591,9 +597,7 @@ class LoadPilAndNumpy:
         elif im.dtype.kind == "f":  # float32 in [0, 1]: cv2 and MPS reject other float dtypes
             im = im.astype(np.float32, copy=False)
             if im.size and im.max() > 1.0:
-                LOGGER.warning(
-                    f"float images should be normalized 0.0-1.0 but max value is {im.max()}. Dividing by 255."
-                )
+                _warn_unnormalized_float()
                 im = im / 255.0
         im = np.atleast_3d(im)
         # Both routes validate here: a zero dimension divides by zero in LetterBox, and a batched array reads
