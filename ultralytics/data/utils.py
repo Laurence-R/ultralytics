@@ -279,13 +279,20 @@ def check_image(im_file: str) -> tuple[str, tuple[int, int]]:
         AssertionError: If the image size is less than 10 pixels in any dimension or the format is invalid.
     """
     msg = ""
-    im = Image.open(im_file)
-    im.verify()  # PIL verify
-    shape = exif_size(im)  # image size
-    shape = (shape[1], shape[0])  # hw
+    try:
+        im = Image.open(im_file)
+        im.verify()  # PIL verify
+        shape, fmt = exif_size(im)[::-1], im.format.lower()  # hw
+    except Image.UnidentifiedImageError:  # PIL cannot open some TIFFs, such as float32 color, that OpenCV decodes
+        if (
+            Path(im_file).suffix.lower() not in {".tif", ".tiff"}
+            or (im := imread(im_file, cv2.IMREAD_UNCHANGED)) is None
+        ):
+            raise
+        shape, fmt = im.shape[:2], "tiff"  # hw, already upright
     assert (shape[0] > 9) & (shape[1] > 9), f"image size {shape} <10 pixels"
-    assert im.format.lower() in IMG_FORMATS | {"jpeg2000"}, f"Invalid image format {im.format}. {FORMATS_HELP_MSG}"
-    if im.format.lower() in {"jpg", "jpeg"}:
+    assert fmt in IMG_FORMATS | {"jpeg2000"}, f"Invalid image format {fmt}. {FORMATS_HELP_MSG}"
+    if fmt in {"jpg", "jpeg"}:
         with open(im_file, "rb") as f:
             f.seek(-2, 2)
             corrupt = f.read() != b"\xff\xd9"
