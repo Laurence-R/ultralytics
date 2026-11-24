@@ -590,6 +590,11 @@ class LoadPilAndNumpy:
                 im = np.asarray(im if im.mode == flag else im.convert(flag))  # convert() copies even when same mode
         elif im.dtype.kind == "f":  # float32 in [0, 1]: cv2 and MPS reject other float dtypes
             im = im.astype(np.float32, copy=False)
+            if im.size and im.max() > 1.0:
+                LOGGER.warning(
+                    f"float images should be normalized 0.0-1.0 but max value is {im.max()}. Dividing by 255."
+                )
+                im = im / 255.0
         im = np.atleast_3d(im)
         # Both routes validate here: a zero dimension divides by zero in LetterBox, and a batched array reads
         # shape[2] as a channel count it is not. Raised rather than asserted so `python -O` keeps the check, and
