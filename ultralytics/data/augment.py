@@ -18,7 +18,7 @@ from ultralytics.utils import LOGGER, IterableSimpleNamespace, colorstr, depreca
 from ultralytics.utils.checks import check_version
 from ultralytics.utils.instance import Instances
 from ultralytics.utils.metrics import bbox_ioa
-from ultralytics.utils.ops import segment2box, xywh2xyxy, xyxyxyxy2xywhr
+from ultralytics.utils.ops import img_max, segment2box, xywh2xyxy, xyxyxyxy2xywhr
 from ultralytics.utils.torch_utils import TORCHVISION_0_10, TORCHVISION_0_11, TORCHVISION_0_13
 
 DEFAULT_MEAN = (0.0, 0.0, 0.0)
@@ -607,8 +607,13 @@ class Mosaic(BaseMixTransform):
             (dict): Updated labels with mosaic image.
         """
         layout = params["layout"]
+        dtype = labels["img"].dtype
         if self.n == 4:
-            img4 = np.full((self.imgsz * 2, self.imgsz * 2, labels["img"].shape[2]), 114, dtype=np.uint8)
+            img4 = np.full(
+                (self.imgsz * 2, self.imgsz * 2, labels["img"].shape[2]),
+                114 * img_max(dtype) / 255,  # 114 gray in the image dtype range
+                dtype=dtype,
+            )
             for item in layout:
                 labels_patch = item["labels_patch"]
                 img = labels_patch["img"]
@@ -617,7 +622,11 @@ class Mosaic(BaseMixTransform):
                 img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]
             labels["img"] = img4
         elif self.n == 9:
-            img9 = np.full((self.imgsz * 3, self.imgsz * 3, labels["img"].shape[2]), 114, dtype=np.uint8)
+            img9 = np.full(
+                (self.imgsz * 3, self.imgsz * 3, labels["img"].shape[2]),
+                114 * img_max(dtype) / 255,  # 114 gray in the image dtype range
+                dtype=dtype,
+            )
             for item in layout:
                 labels_patch = item["labels_patch"]
                 img = labels_patch["img"]
